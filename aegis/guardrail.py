@@ -72,6 +72,13 @@ class GuardrailEngine:
             if confirm.strip().lower() != "y":
                 return False, "Command aborted by user.", category
 
+        # import platform
+        # if platform.system() == "Windows":
+        #     if cmd.strip().startswith("ls"):
+        #         cmd = cmd.strip().replace("ls -la", "dir /a").replace("ls -a", "dir /a").replace("ls -l", "dir").replace("ls", "dir")
+        #     elif cmd.strip().startswith("cat "):
+        #         cmd = cmd.strip().replace("cat ", "type ", 1)
+
         try:
             # Execute the command in the host shell
             result = subprocess.run(
