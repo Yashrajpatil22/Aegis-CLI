@@ -3,13 +3,14 @@ import re
 from typing import Tuple, Optional
 
 SAFE_PATTERNS = [
-    r"^ls\b", r"^dir\b", r"^cat\b", r"^grep\b", 
-    r"^git\s+status\b", r"^git\s+diff\b", r"^pytest\b"
+    r"^ls\b", r"^dir\b", r"^cat\b", r"^type\b", r"^grep\b", r"^findstr\b",
+    r"^git\s+status\b", r"^git\s+diff\b", r"^pytest\b", r"^python\s+-m\s+pytest\b"
 ]
 
 CRITICAL_PATTERNS = [
-    r"\brm\b", r"\bdel\b", r"git\s+reset\s+--hard", 
-    r"git\s+push\s+.*--force", r"\bdropdb\b"
+    r"\brm\b", r"\bdel\b", r"\berase\b", r"\brmdir\b",
+    r"git\s+reset\s+--hard", r"git\s+push\s+.*--force", 
+    r"\bdropdb\b", r"\bformat\b"
 ]
 
 class GuardrailEngine:
