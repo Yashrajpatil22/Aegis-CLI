@@ -1,5 +1,6 @@
 import subprocess
 import re
+from typing import Tuple, Optional
 
 SAFE_PATTERNS = [
     r"^ls\b", r"^dir\b", r"^cat\b", r"^grep\b", 
@@ -25,8 +26,8 @@ class GuardrailEngine:
                 return "SAFE"
         return "MUTATIVE"
 
-    def create_shadow_stash(self) -> str | None:
-        """Takes a git snapshot of working changes without disrupting HEAD."""
+    def create_shadow_stash(self) -> Optional[str]:
+        """Takes a git snapshot of uncommitted working changes without disrupting HEAD."""
         try:
             res = subprocess.run(
                 ["git", "stash", "create"],
@@ -39,3 +40,50 @@ class GuardrailEngine:
             return sha if sha else None
         except (subprocess.CalledProcessError, FileNotFoundError):
             return None
+
+    def rollback(self, stash_sha: str) -> bool:
+        """Restores the workspace to the captured shadow stash commit."""
+        try:
+            subprocess.run(
+                ["git", "stash", "apply", stash_sha],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            return True
+        except subprocess.CalledProcessError:
+            return False
+
+    def execute_command(self, cmd: str) -> Tuple[bool, str, str]:
+        """
+        Executes a command through the guardrail safety pipeline.
+        Returns: (success_bool, stdout/stderr_message, safety_category)
+        """
+        category = self.classify(cmd)
+        stash_sha = None
+
+        if category in ["MUTATIVE", "CRITICAL"]:
+            stash_sha = self.create_shadow_stash()
+
+        if category == "CRITICAL":
+            confirm = input(f"\n[AEGIS SECURITY ALERT] '{cmd}' is flagged CRITICAL. Allow execution? (y/N): ")
+            if confirm.strip().lower() != "y":
+                return False, "Command aborted by user.", category
+
+        try:
+            # Execute the command in the host shell
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True
+            )
+            output = result.stdout if result.returncode == 0 else result.stderr
+            return (result.returncode == 0), output, category
+
+        except Exception as e:
+            if stash_sha:
+                self.rollback(stash_sha)
+            return False, f"Execution failed: {str(e)}. Workspace rolled back.", category
