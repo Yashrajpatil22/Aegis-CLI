@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (CRITICAL: never commit this folder)
+venv/
+env/
+ENV/
+.venv/
+
+# Environment variables & API keys (CRITICAL: prevents leaking paid LLM keys)
+.env
+.env.local
+*.env
+
+# Testing & Coverage caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Tree-sitter build files & binaries
+*.so
+*.dylib
+*.dll
+
+# IDE and OS configurations
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
