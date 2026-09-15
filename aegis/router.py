@@ -3,7 +3,10 @@ import re
 import ollama
 from typing import Tuple, List, Dict
 from rich.console import Console
+from dotenv import load_dotenv
 
+# Load environment variables from .env file automatically
+load_dotenv()
 console = Console()
 
 class HybridRouter:
