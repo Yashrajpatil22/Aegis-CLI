@@ -29,6 +29,7 @@ When you want to run a shell command, enclose it strictly in a markdown bash blo
 ```bash
 <command>
 Keep responses concise, technical, and actionable.
+When suggesting terminal actions to inspect files or run tasks, ONLY output valid shell commands (e.g., 'type main.py' on Windows, or standard python/pytest commands) enclosed inside ```bash or ```powershell blocks. Never invent custom tool names like read_file.
 """
 
 class AegisAgent:

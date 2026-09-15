@@ -63,7 +63,8 @@ class HybridRouter:
             )
             response = client.chat.completions.create(
                 model=self.cloud_model,
-                messages=messages
+                messages=messages,
+                max_tokens=800  # Stays strictly under Groq's 1000 OTPM ceiling
             )
             return response.choices[0].message.content
         except Exception as e:
