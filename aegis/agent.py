@@ -4,6 +4,7 @@ import ollama
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
+from typing import Dict, Optional, List
 try:
     from aegis.guardrail import GuardrailEngine
     from aegis.pruner import ASTPruner
@@ -21,16 +22,29 @@ CURRENT_OS = platform.system().lower()
 
 SYSTEM_PROMPT = f"""You are Aegis CLI, an autonomous software engineering assistant.
 Host Operating System: {CURRENT_OS}
+
 Shell syntax guidelines:
 - If Windows: Use Windows CMD/PowerShell commands (e.g., 'dir', 'type', 'del', 'copy'). Do NOT use 'ls' or 'cat'.
 - If Linux/Darwin: Use POSIX commands (e.g., 'ls', 'cat', 'rm', 'cp').
 
-When you want to run a shell command, enclose it strictly in a markdown bash block:
+CRITICAL OPERATIONAL RULES:
+- NEVER output XML tags, tool-call syntax, or function headers like `<tool_call>` or `<function>`.
+- Full repository context and code skeletons are already provided.
+- NEVER use shell redirection (like 'echo >>') or batch scripts to create or append code to source files.
+- When creating or modifying files, you MUST use the structured multi-file format below.
+- ALWAYS wrap each file's complete updated contents in a ```python ... ``` code block.
+- Do NOT output conversational filler, introductory summaries, or notes between or inside the file blocks.
+
+MULTI-FILE EDIT FORMAT:
+*** FILE: <relative_path> ***
+```python
+<complete updated file contents>
+
+TERMINAL COMMAND FORMAT:
+When you need to suggest a shell action (such as running tests or inspecting directories), enclose it strictly in:
 ```bash
 <command>
-Keep responses concise, technical, and actionable.
-When suggesting terminal actions to inspect files or run tasks, ONLY output valid shell commands (e.g., 'type main.py' on Windows, or standard python/pytest commands) enclosed inside ```bash or ```powershell blocks. Never invent custom tool names like read_file.
-"""
+Keep responses concise, deterministic, and strictly formatted."""
 
 class AegisAgent:
     def __init__(self, repo_path: str = "."):
@@ -138,8 +152,8 @@ Fix the bug causing the test failure. Output ONLY the raw replacement Python cod
             with open(target_path, "w", encoding="utf-8") as f:
                 f.write(original_code)
 
+    
     def run_turn(self, user_input: str):
-        # 1. Direct command interception
         cleaned = user_input.strip()
         if cleaned.lower().startswith("heal"):
             parts = cleaned.split()
@@ -147,16 +161,22 @@ Fix the bug causing the test failure. Output ONLY the raw replacement Python cod
             self.self_heal(target)
             return
 
-        # 2. Gather AST repository skeleton
         repo_context = self.get_repo_context()
-        full_user_prompt = (
-            f"Workspace Code Skeleton:\n{repo_context}\n\nTask: {user_input}"
-            if repo_context else user_input
-        )
+        # Only inject pruned AST context if the prompt explicitly asks for repository-wide analysis
+        # or if the user prompt does not name specific target files.
+        needs_full_repo = any(kw in user_input.lower() for kw in ["architecture", "workspace", "repo", "all files", "entire project"])
+        
+        if needs_full_repo:
+            repo_context = self.get_repo_context()
+            # Cap context at 1500 chars to avoid hitting free-tier token barriers
+            if len(repo_context) > 1500:
+                repo_context = repo_context[:1500] + "\n... [Remaining skeleton truncated]"
+            full_user_prompt = f"Workspace Skeleton:\n{repo_context}\n\nTask: {user_input}"
+        else:
+            full_user_prompt = user_input
 
         self.history.append({"role": "user", "content": full_user_prompt})
 
-        # 3. Query via Hybrid Router
         try:
             reply, tier = self.router.route_and_generate(
                 self.history,
@@ -165,14 +185,20 @@ Fix the bug causing the test failure. Output ONLY the raw replacement Python cod
             )
             self.history.append({"role": "assistant", "content": reply})
         except Exception as e:
-            console.print(f"[bold red]Inference Error:[/bold red] {e}")
+            console.print(f"[bold red]Inference Error:[/bold red] {str(e)[:200]}", highlight=False)
             return
 
-        # 4. Render model output
         panel_title = f"[bold green]Aegis Assistant [{tier}][/bold green]"
         console.print(Panel(Markdown(reply), title=panel_title, border_style="green"))
 
-        # 5. Extract and safely execute commands via the Guardrail Engine
+        # Check for multi-file patches
+        patches = self.parse_multi_file_patches(reply)
+        if patches:
+            confirm = console.input("\n[bold yellow]Apply multi-file patch transaction? (y/N): [/bold yellow]")
+            if confirm.strip().lower() == "y":
+                self.apply_atomic_patches(patches)
+
+        # Check for shell commands
         commands = self.extract_commands(reply)
         for cmd in commands:
             category = self.guard.classify(cmd)
@@ -186,3 +212,112 @@ Fix the bug causing the test failure. Output ONLY the raw replacement Python cod
                 success, output, cat = self.guard.execute_command(cmd)
                 style = "green" if success else "red"
                 console.print(Panel(output.strip() or "(No output generated)", title=f"Result [{cat}]", border_style=style))
+        
+    def parse_multi_file_patches(self, text: str) -> Dict[str, str]:
+        """
+        Parses structured multi-file output formatted as:
+        *** FILE: relative/path/to/file.py ***
+        [```python optional]
+        <code>
+        [``` optional]
+        """
+        # Split across *** FILE: <path> *** headers
+        sections = re.split(r"\*\*\*\s*FILE:\s*([^\n\*]+?)\s*\*\*\*", text)
+        patches = {}
+        
+        # re.split creates [preamble, path1, body1, path2, body2, ...]
+        for i in range(1, len(sections), 2):
+            rel_path = sections[i].strip().replace("/", os.sep).replace("\\", os.sep)
+            raw_body = sections[i + 1].strip()
+
+            # Clean out conversational wrappers if present before next section
+            # Strip markdown fences if the model included them
+            fence_match = re.search(r"```(?:python)?\s*\n(.*?)\n```", raw_body, re.DOTALL)
+            if fence_match:
+                code = fence_match.group(1).strip()
+            else:
+                # Strip out trailing conversational sentences like "Then executing command: ..."
+                lines = []
+                for line in raw_body.split("\n"):
+                    if any(line.strip().startswith(prefix) for prefix in [
+                        "Then executing", "Next,", "Execute", "*** FILE:"
+                    ]):
+                        break
+                    lines.append(line)
+                code = "\n".join(lines).strip("` \n")
+
+            if code:
+                patches[rel_path] = code
+
+        return patches
+
+    def apply_atomic_patches(self, patches: Dict[str, str]) -> bool:
+        """
+        Applies changes to multiple files transactionally:
+        1. Backs up original contents of all target files in memory.
+        2. Writes new content to disk.
+        3. Runs test verification.
+        4. Restores all files if verification fails.
+        """
+        if not patches:
+            return True
+
+        console.print(Panel(
+            f"[bold cyan]Detected Multi-File Refactor Transaction ({len(patches)} files)[/bold cyan]:\n" +
+            "\n".join(f" - [yellow]{f}[/yellow]" for f in patches.keys()),
+            border_style="cyan"
+        ))
+
+        # Snapshot originals for in-memory rollback
+        backup = {}
+        for rel_path in patches.keys():
+            full_path = os.path.join(self.repo_path, rel_path)
+            if os.path.exists(full_path):
+                with open(full_path, "r", encoding="utf-8") as f:
+                    backup[rel_path] = f.read()
+            else:
+                backup[rel_path] = None  # Indicates new file created
+
+        # Apply patches
+        try:
+            for rel_path, new_code in patches.items():
+                full_path = os.path.join(self.repo_path, rel_path)
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                with open(full_path, "w", encoding="utf-8") as f:
+                    f.write(new_code)
+            console.print("[bold yellow]Patches written to disk. Running automated verification suite...[/bold yellow]")
+        except Exception as e:
+            console.print(f"[bold red]File write failed: {e}. Initiating instant rollback.[/bold red]")
+            self._restore_backup(backup)
+            return False
+
+        # Run test verification
+        passed, trace = self.verifier.run_tests()
+        if passed:
+            console.print(Panel(
+                f"[bold green]Multi-file patch verified successfully![/bold green]\n"
+                f"Touched files: {', '.join(patches.keys())}",
+                title="[bold green]Transaction Committed[/bold green]",
+                border_style="green"
+            ))
+            return True
+        else:
+            console.print(Panel(
+                f"[bold red]Tests failed after applying patches. Rolling back all files.[/bold red]\n{trace}",
+                title="[bold red]Atomic Rollback Triggered[/bold red]",
+                border_style="red"
+            ))
+            self._restore_backup(backup)
+            return False
+
+    def _restore_backup(self, backup: Dict[str, Optional[str]]):
+        """Restores original files or deletes newly created ones."""
+        for rel_path, original_content in backup.items():
+            full_path = os.path.join(self.repo_path, rel_path)
+            if original_content is None:
+                if os.path.exists(full_path):
+                    os.remove(full_path)
+            else:
+                with open(full_path, "w", encoding="utf-8") as f:
+                    f.write(original_content)
+        console.print("[dim]Workspace restored to pre-transaction state.[/dim]")
