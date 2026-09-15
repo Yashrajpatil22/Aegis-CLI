@@ -13,7 +13,7 @@ class HybridRouter:
     def __init__(
         self,
         local_model: str = "qwen2.5-coder:3b",
-        cloud_model: str = "llama-3.3-70b-versatile",
+        cloud_model: str = "qwen/qwen3.8-27b",
     ):
         self.local_model = local_model
         self.cloud_model = cloud_model

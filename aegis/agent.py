@@ -61,22 +61,15 @@ class AegisAgent:
 
     def extract_commands(self, text: str) -> list[str]:
         """Extracts executable shell commands strictly enclosed in ```bash, ```powershell, or ```cmd blocks."""
-        # Match only blocks explicitly marked as shell
         pattern = r"```(?:bash|sh|shell|powershell|cmd)\s*\n(.*?)\n```"
         matches = re.findall(pattern, text, re.DOTALL)
         commands = []
         for block in matches:
             for line in block.strip().split("\n"):
                 line = line.strip()
-                # Skip comments, blank lines, and accidental python syntax
-                if (
-                    line 
-                    and not line.startswith("#") 
-                    and not line.startswith("import ") 
-                    and not line.startswith("from ") 
-                    and not line.startswith("def ")
-                ):
-                    commands.append(line)
+                if not line or line.startswith(("#", "```", "import ", "from ", "def ", "class ")):
+                    continue
+                commands.append(line)
         return commands
     
     def self_heal(self, target_file: str):
