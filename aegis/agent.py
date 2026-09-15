@@ -4,9 +4,14 @@ import ollama
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
-
-from aegis.guardrail import GuardrailEngine
-from aegis.pruner import ASTPruner
+try:
+    from aegis.guardrail import GuardrailEngine
+    from aegis.pruner import ASTPruner
+    from aegis.verifier import TestVerifier
+except ModuleNotFoundError:
+    from guardrail import GuardrailEngine
+    from pruner import ASTPruner
+    from verifier import TestVerifier
 import platform
 
 console = Console()
@@ -30,6 +35,7 @@ class AegisAgent:
         self.repo_path = repo_path
         self.guard = GuardrailEngine(repo_path=repo_path)
         self.pruner = ASTPruner()
+        self.verifier = TestVerifier(repo_path=repo_path)
         self.history = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     def get_repo_context(self) -> str:
@@ -63,7 +69,74 @@ class AegisAgent:
                     commands.append(line)
         return commands
 
+    def self_heal(self, target_file: str):
+        console.print(Panel(f"[bold cyan]Initiating Self-Healing Loop for target:[/bold cyan] {target_file}", border_style="cyan"))
+
+        passed, trace = self.verifier.run_tests()
+        if passed:
+            console.print("[bold green]All tests are already passing. No fix required![/bold green]")
+            return
+
+        console.print(Panel(trace, title="[bold red]Test Failure Detected[/bold red]", border_style="red"))
+        stash_sha = self.guard.create_shadow_stash()
+
+        target_path = os.path.join(self.repo_path, target_file)
+        if not os.path.exists(target_path):
+            console.print(f"[bold red]File not found:[/bold red] {target_file}")
+            return
+
+        with open(target_path, "r", encoding="utf-8") as f:
+            original_code = f.read()
+
+        heal_prompt = f"""The following test suite failed:
+{trace}
+
+Here is the source code of `{target_file}`:
+```python
+{original_code}
+Fix the bug causing the test failure. Output ONLY the raw replacement Python code inside a single python ...  block. Do not include conversational text."""
+        with console.status("[bold cyan]Aegis reasoning patch with Qwen-2.5-Coder...[/bold cyan]"):
+            response = ollama.chat(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an automated code repair agent. Provide only correct python code inside a ```python block."},
+                    {"role": "user", "content": heal_prompt}
+                ]
+            )
+        raw_reply = response.message.content
+
+        match = re.search(r"```(?:python)?\s*\n(.*?)\n```", raw_reply, re.DOTALL)
+        patch_code = match.group(1) if match else raw_reply.strip()
+
+        with open(target_path, "w", encoding="utf-8") as f:
+            f.write(patch_code)
+
+        console.print(f"[bold yellow]Patch applied to {target_file}. Re-verifying test suite...[/bold yellow]")
+
+        retest_passed, retest_trace = self.verifier.run_tests()
+        if retest_passed:
+            console.print(Panel(
+                f"[bold green]Patch Verified Successfully![/bold green]\n`{target_file}` fixed and all tests passing.",
+                title="[bold green]Healing Succeeded[/bold green]",
+                border_style="green"
+            ))
+        else:
+            console.print(Panel(
+                f"[bold red]Patch failed verification. Rolling back workspace.[/bold red]\n{retest_trace}",
+                title="[bold red]Self-Healing Rollback[/bold red]",
+                border_style="red"
+            ))
+            with open(target_path, "w", encoding="utf-8") as f:
+                f.write(original_code)
+
     def run_turn(self, user_input: str):
+
+        cleaned = user_input.strip()
+        if cleaned.lower().startswith("heal"):
+            parts = cleaned.split()
+            target = parts[1] if len(parts) > 1 else "math_utils.py"
+            self.self_heal(target)
+            return
         # 1. Gather repository AST context
         repo_context = self.get_repo_context()
         full_user_prompt = (

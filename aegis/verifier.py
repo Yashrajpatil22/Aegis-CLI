@@ -5,14 +5,24 @@ class TestVerifier:
     def __init__(self, repo_path: str = "."):
         self.repo_path = repo_path
 
-    def run_tests(self) -> Tuple[bool, str]:
+    def run_tests(self, target_test: str = None) -> Tuple[bool, str]:
         """
-        Executes pytest in the current workspace.
-        Returns: (passed: bool, output_trace: str)
+        Runs pytest. Ignores manual test runner scripts (test_execution.py, test_pruner.py, test_guard.py).
         """
+        cmd = [
+            "pytest",
+            "-q",
+            "--ignore=test_execution.py",
+            "--ignore=test_pruner.py",
+            "--ignore=test_guard.py"
+        ]
+        
+        if target_test:
+            cmd.append(target_test)
+
         try:
             res = subprocess.run(
-                ["pytest", "-q"],
+                cmd,
                 cwd=self.repo_path,
                 capture_output=True,
                 text=True
