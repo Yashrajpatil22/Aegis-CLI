@@ -1,3 +1,4 @@
+import traceback
 from rich.console import Console
 from rich.panel import Panel
 from aegis.agent import AegisAgent
@@ -32,8 +33,9 @@ def main():
         except EOFError:
             console.print("\n[yellow]Session terminated. Goodbye![/yellow]")
             break
-        except Exception as e:
-            console.print(f"\n[bold red]Runtime Error during turn:[/bold red] {e}")
+        except Exception:
+            console.print("\n[bold red]Unhandled Exception in Turn:[/bold red]")
+            traceback.print_exc()
             continue
 
 if __name__ == "__main__":
