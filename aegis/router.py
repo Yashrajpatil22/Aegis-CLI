@@ -9,23 +9,17 @@ load_dotenv()
 console = Console()
 
 try:
-    from openai import OpenAI
+    from google import genai
+    from google.genai import types
 except ImportError:
-    OpenAI = None
+    genai = None
 
 class HybridRouter:
-    def __init__(
-        self,
-        local_model: str = "qwen2.5-coder:3b",
-        cloud_model: str = "openai/gpt-oss-20b",
-    ):
-        self.local_model = local_model
-        self.cloud_model = cloud_model
-        self.cloud_api_key = (
-            os.getenv("GROQ_API_KEY")
-            or os.getenv("AEGIS_CLOUD_API_KEY")
-            or os.getenv("OPENAI_API_KEY")
-        )
+    def __init__(self, repo_path: str = "."):
+        self.repo_path = repo_path
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.cloud_model = os.getenv("AEGIS_CLOUD_MODEL", "gemini-2.5-flash")
+        self.local_model = os.getenv("AEGIS_LOCAL_MODEL", "qwen2.5-coder:3b")
 
         self.cloud_triggers = [
             r"\brefactor\b",
@@ -57,37 +51,50 @@ class HybridRouter:
 
     def query_local(self, messages: List[Dict[str, str]]) -> str:
         try:
-            response = ollama.chat(model=self.local_model, messages=messages)
-            return response.message.content
+            response = ollama.chat(
+                model=self.local_model,
+                messages=messages
+            )
+            return response["message"]["content"]
         except Exception as e:
             return f"Local SLM Error: {e}"
 
     def query_cloud(self, messages: List[Dict[str, str]]) -> str:
-        if not self.cloud_api_key or OpenAI is None:
-            console.print("[bold yellow][Router Warning][/bold yellow] Groq key or OpenAI library missing. Falling back to local SLM.", highlight=False)
+        if not self.gemini_api_key or genai is None:
+            console.print("[bold yellow][Router Warning][/bold yellow] Gemini API key or SDK missing. Falling back to local SLM.", highlight=False)
             return self.query_local(messages)
 
         try:
-            # Enforce strict 8-second hard socket timeouts across connect, read, and write
-            timeout_config = httpx.Timeout(8.0, connect=4.0)
-            http_client = httpx.Client(timeout=timeout_config)
+            client = genai.Client(api_key=self.gemini_api_key)
 
-            client = OpenAI(
-                base_url="https://api.groq.com/openai/v1",
-                api_key=self.cloud_api_key,
-                http_client=http_client,
-                max_retries=0
+            # Separate system prompt from conversational history
+            system_instruction = None
+            contents = []
+            for msg in messages:
+                if msg["role"] == "system":
+                    system_instruction = msg["content"]
+                else:
+                    role = "user" if msg["role"] == "user" else "model"
+                    contents.append(types.Content(
+                        role=role,
+                        parts=[types.Part.from_text(text=msg["content"])]
+                    ))
+
+            config = types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.2,
+                max_output_tokens=1500
             )
 
-            response = client.chat.completions.create(
+            response = client.models.generate_content(
                 model=self.cloud_model,
-                messages=messages,
-                max_tokens=600,
-                temperature=0.2
+                contents=contents,
+                config=config
             )
-            return response.choices[0].message.content or ""
+            return response.text or ""
+
         except Exception as e:
-            console.print(f"\n[bold red][Cloud Error / Timeout][/bold red] {str(e)[:100]}. Falling back to local SLM.", highlight=False)
+            console.print(f"\n[bold red][Cloud Error][/bold red] {str(e)[:150]}. Falling back to local SLM.", highlight=False)
             return self.query_local(messages)
 
     def route_and_generate(
