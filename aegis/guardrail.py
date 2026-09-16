@@ -72,24 +72,29 @@ class GuardrailEngine:
             if confirm.strip().lower() != "y":
                 return False, "Command aborted by user.", category
 
-        # import platform
-        # if platform.system() == "Windows":
-        #     if cmd.strip().startswith("ls"):
-        #         cmd = cmd.strip().replace("ls -la", "dir /a").replace("ls -a", "dir /a").replace("ls -l", "dir").replace("ls", "dir")
-        #     elif cmd.strip().startswith("cat "):
-        #         cmd = cmd.strip().replace("cat ", "type ", 1)
+        # Prevent unittest discovery from recursing into venv/packages
+        clean_cmd = cmd.strip()
+        if clean_cmd.startswith("python -m unittest discover") and "-s" not in clean_cmd:
+            clean_cmd = "python -m unittest discover -s . -p \"test_*.py\""
 
         try:
-            # Execute the command in the host shell
+            # Execute with DEVNULL to eliminate stdin deadlocks, and enforce a 15s timeout
             result = subprocess.run(
-                cmd,
+                clean_cmd,
                 shell=True,
                 cwd=self.repo_path,
                 capture_output=True,
-                text=True
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=15.0
             )
-            output = result.stdout if result.returncode == 0 else result.stderr
+            output = result.stdout if result.returncode == 0 else (result.stderr or result.stdout)
             return (result.returncode == 0), output, category
+
+        except subprocess.TimeoutExpired:
+            if stash_sha:
+                self.rollback(stash_sha)
+            return False, f"Execution timed out after 15s: '{cmd}'. Workspace rolled back.", category
 
         except Exception as e:
             if stash_sha:

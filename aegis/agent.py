@@ -161,14 +161,11 @@ Fix the bug causing the test failure. Output ONLY the raw replacement Python cod
             self.self_heal(target)
             return
 
-        repo_context = self.get_repo_context()
-        # Only inject pruned AST context if the prompt explicitly asks for repository-wide analysis
-        # or if the user prompt does not name specific target files.
-        needs_full_repo = any(kw in user_input.lower() for kw in ["architecture", "workspace", "repo", "all files", "entire project"])
+        has_specific_files = bool(re.findall(r"\b[\w_-]+\.py\b", user_input.lower()))
+        needs_full_repo = any(kw in user_input.lower() for kw in ["architecture", "workspace", "repo", "all files", "entire project"]) and not has_specific_files
         
         if needs_full_repo:
             repo_context = self.get_repo_context()
-            # Cap context at 1500 chars to avoid hitting free-tier token barriers
             if len(repo_context) > 1500:
                 repo_context = repo_context[:1500] + "\n... [Remaining skeleton truncated]"
             full_user_prompt = f"Workspace Skeleton:\n{repo_context}\n\nTask: {user_input}"
@@ -214,42 +211,43 @@ Fix the bug causing the test failure. Output ONLY the raw replacement Python cod
                 console.print(Panel(output.strip() or "(No output generated)", title=f"Result [{cat}]", border_style=style))
         
     def parse_multi_file_patches(self, text: str) -> Dict[str, str]:
-        """
-        Parses structured multi-file output formatted as:
-        *** FILE: relative/path/to/file.py ***
-        [```python optional]
-        <code>
-        [``` optional]
-        """
-        # Split across *** FILE: <path> *** headers
-        sections = re.split(r"\*\*\*\s*FILE:\s*([^\n\*]+?)\s*\*\*\*", text)
         patches = {}
-        
-        # re.split creates [preamble, path1, body1, path2, body2, ...]
-        for i in range(1, len(sections), 2):
-            rel_path = sections[i].strip().replace("/", os.sep).replace("\\", os.sep)
-            raw_body = sections[i + 1].strip()
 
-            # Clean out conversational wrappers if present before next section
-            # Strip markdown fences if the model included them
-            fence_match = re.search(r"```(?:python)?\s*\n(.*?)\n```", raw_body, re.DOTALL)
-            if fence_match:
-                code = fence_match.group(1).strip()
-            else:
-                # Strip out trailing conversational sentences like "Then executing command: ..."
-                lines = []
-                for line in raw_body.split("\n"):
-                    if any(line.strip().startswith(prefix) for prefix in [
-                        "Then executing", "Next,", "Execute", "*** FILE:"
-                    ]):
-                        break
-                    lines.append(line)
-                code = "\n".join(lines).strip("` \n")
+        # 1. Primary Format: *** FILE: <path> ***
+        if "*** FILE:" in text:
+            sections = re.split(r"\*\*\*\s*FILE:\s*([^\n\*]+?)\s*\*\*\*", text)
+            for i in range(1, len(sections), 2):
+                rel_path = sections[i].strip().replace("/", os.sep).replace("\\", os.sep)
+                raw_body = sections[i + 1].strip()
 
-            if code:
+                fence_match = re.search(r"```(?:python)?\s*\n(.*?)\n```", raw_body, re.DOTALL)
+                if fence_match:
+                    code = fence_match.group(1).strip()
+                else:
+                    lines = []
+                    for line in raw_body.split("\n"):
+                        if any(line.strip().startswith(p) for p in ["Then executing", "Next,", "Execute", "*** FILE:"]):
+                            break
+                        lines.append(line)
+                    code = "\n".join(lines).strip("` \n")
+
+                if code:
+                    patches[rel_path] = code
+            return patches
+
+        # 2. Fallback Format: '# filename.py' OR bare 'filename.py' on its own line
+        fallback_pattern = r"(?:^|\n)(?:#|//)?\s*([\w_/-]+\.py)\s*\n(.*?)(?=(?:\n(?:#|//)?\s*[\w_/-]+\.py\s*\n)|$)"
+        for match in re.finditer(fallback_pattern, text, re.DOTALL):
+            rel_path = match.group(1).strip().replace("/", os.sep).replace("\\", os.sep)
+            body = match.group(2).strip()
+
+            fence_match = re.search(r"```(?:python)?\s*\n(.*?)\n```", body, re.DOTALL)
+            code = fence_match.group(1).strip() if fence_match else body.strip("` \n")
+            if code and len(code) > 10:  # avoid matching casual mentions
                 patches[rel_path] = code
 
         return patches
+
 
     def apply_atomic_patches(self, patches: Dict[str, str]) -> bool:
         """
