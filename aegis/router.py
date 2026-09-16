@@ -4,7 +4,7 @@ from typing import List, Dict, Tuple
 import httpx
 from rich.console import Console
 from dotenv import load_dotenv
-
+import ollama
 load_dotenv()
 console = Console()
 
@@ -83,7 +83,9 @@ class HybridRouter:
             config = types.GenerateContentConfig(
                 system_instruction=system_instruction,
                 temperature=0.2,
-                max_output_tokens=1500
+                max_output_tokens=1500,
+                # Explicitly disable automatic function calling discovery
+                tools=[],
             )
 
             response = client.models.generate_content(
